@@ -2,7 +2,7 @@
 name = "causal-effect-engine"
 version = "0.1.0"
 description = "Heterogeneous treatment-effect engine: estimate, validate, and serve causal effects"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     # Causal inference
     "dowhy>=0.11",
