@@ -1,8 +1,32 @@
 # Causal Effect Engine
 
+> **Status: In development — 0 of 9 milestones complete.**
+
 A heterogeneous treatment-effect engine that estimates not just *whether* an intervention works but *for whom*, validates those estimates rigorously, and serves targeting decisions through an API.
 
-**Headline result:** an observational pipeline that recovers the experimental benchmark from the LaLonde/NSW dataset — the classic test of whether causal estimation actually works.
+**Headline goal:** characterize when and why observational methods recover the experimental benchmark from the LaLonde/NSW dataset — across comparison groups (CPS-1 vs. PSID), samples (LaLonde 1986 vs. Dehejia & Wahba 1999 subsample), and estimators. This is the honest framing of "does observational causal inference work?" — the answer depends on the sample and specification, and documenting that is the result.
+
+---
+
+## Setup
+
+```bash
+# Install Python 3.12 and project dependencies
+uv python install 3.12
+uv sync --group dev --group notebook
+
+# Run tests
+uv run pytest
+
+# Start the API (loads serialized artifacts from artifacts/)
+uv run uvicorn src.serve.api:app --reload
+
+# Or with Docker
+docker build -t causal-effect-engine .
+docker run -p 8000:8000 causal-effect-engine
+```
+
+> Most endpoints currently return `NotImplementedError` — the API scaffold is defined from day one so the serving contract is stable as the internals are built.
 
 ---
 
@@ -12,7 +36,7 @@ A heterogeneous treatment-effect engine that estimates not just *whether* an int
 |---|---|
 | **Research core** | Ingest data, encode a causal DAG, estimate average and heterogeneous treatment effects, stress-test with refutation and sensitivity analysis |
 | **Decision layer** | Rank units by estimated treatment effect (uplift) to target interventions at the people they actually help |
-| **Serving** | `/effect` (estimate an effect for a configuration) and `/recommend` (rank who to treat) endpoints, containerized |
+| **Serving** | Estimators are fit offline and serialized with their config and data hash; `/effect` and `/recommend` load artifacts at startup — no on-demand training |
 
 ---
 
@@ -20,10 +44,10 @@ A heterogeneous treatment-effect engine that estimates not just *whether* an int
 
 | Dataset | Purpose |
 |---|---|
-| **LaLonde / NSW** | Observational + experimental versions; headline validation: observational pipeline recovers the RCT answer |
-| **IHDP** (semi-synthetic) | True CATEs known; used to compute PEHE and rank CATE estimators |
-| **Criteo Uplift** (~25M rows) | Scale demo and targeting product; evaluated with Qini/AUUC |
-| **Hillstrom MineThatData** | Smaller uplift dataset for prototyping |
+| **LaLonde / NSW** | Observational + experimental versions; benchmark is the Dehejia & Wahba (1999) estimate of $1,794 — tested across CPS-1 and PSID comparison groups with pre-registered success criteria |
+| **IHDP** (semi-synthetic) | True CATEs known; PEHE evaluated across replications 1–10 to give stable estimator rankings (single-replication PEHE is too noisy) |
+| **Criteo Uplift** (~25M rows) | DuckDB ingests all 25M rows out-of-core for feature engineering and evaluation; model trains on a pre-registered 1M-row stratified subsample; evaluated with Qini/AUUC |
+| **Hillstrom MineThatData** | Optional — smaller uplift dataset for prototyping |
 
 ---
 
@@ -45,8 +69,8 @@ Causal evaluation is hard: you never observe both potential outcomes for the sam
 
 Four honest strategies used together:
 
-- **Experimental benchmark** — LaLonde observational pipeline vs. the RCT answer
-- **Semi-synthetic ground truth** — PEHE on IHDP/ACIC where true CATEs are known
+- **Experimental benchmark** — LaLonde DML vs. the Dehejia & Wahba $1,794 estimate; success criteria pre-registered before running; PSID divergence documented (it is the Smith & Todd result and is expected)
+- **Semi-synthetic ground truth** — mean ± std PEHE across IHDP replications 1–10
 - **Refutation + sensitivity** — placebo-treatment tests, random common cause, E-values quantifying how strong an unobserved confounder must be to overturn the result
 - **Uplift metrics** — Qini curves, AUUC, uplift-by-decile for the targeting layer
 
@@ -63,8 +87,10 @@ Four honest strategies used together:
 | Base ML learners | scikit-learn, LightGBM |
 | DAG encoding | NetworkX + graphviz |
 | Storage / ingestion | DuckDB + pandas |
+| Model artifacts | joblib + manifest JSON |
 | Serving | FastAPI + Docker |
 | Demo UI | Streamlit |
+| CI | GitHub Actions |
 | Testing | pytest |
 | Config | pydantic-settings + YAML |
 
@@ -75,7 +101,7 @@ Four honest strategies used together:
 ```
 causal-effect-engine/
 ├── data/
-│   ├── raw/                        # LaLonde, IHDP, Criteo, etc.
+│   ├── raw/                        # Downloaded datasets (gitignored; checksums in config)
 │   ├── processed/
 │   └── db/                         # DuckDB file
 ├── notebooks/
@@ -85,7 +111,7 @@ causal-effect-engine/
 │   └── 04_validation.ipynb         # LaLonde benchmark + PEHE + refutation
 ├── src/
 │   ├── ingestion/
-│   │   └── load_datasets.py
+│   │   └── load_datasets.py        # Download from pinned URLs → verify SHA-256 → DuckDB
 │   ├── identification/
 │   │   ├── dag.py                  # Causal DAG + assumption encoding
 │   │   └── checks.py               # Positivity/overlap, balance diagnostics
@@ -101,11 +127,14 @@ causal-effect-engine/
 │   │   └── uplift.py               # Qini, AUUC, uplift-by-decile
 │   └── serve/
 │       └── api.py                  # FastAPI: /effect, /recommend
+├── artifacts/                      # Serialized models + manifest.json (gitignored)
 ├── tests/
+├── .github/workflows/ci.yml
 ├── configs/
 │   └── config.yaml
+├── pyproject.toml
+├── uv.lock
 ├── Dockerfile
-├── requirements.txt
 └── research_memo.md
 ```
 
@@ -113,27 +142,59 @@ causal-effect-engine/
 
 ## Build order
 
-1. Ingestion + EDA with an overlap lens (LaLonde → DuckDB; propensity overlap)
+1. Ingestion + EDA (LaLonde → DuckDB; SHA-256 checksum; propensity overlap)
 2. DAG + identification module
 3. ATE ladder (naive → IPW → AIPW → DML, side by side)
-4. LaLonde benchmark — observational DML vs. experimental result
-5. CATE layer — meta-learners + causal forest; validate with PEHE on IHDP
+4. LaLonde benchmark — DML vs. pre-registered criteria; PSID divergence documented
+5. CATE layer — meta-learners + causal forest; mean ± std PEHE on IHDP replications 1–10
 6. Refutation + sensitivity suite
-7. Uplift + targeting on Criteo; evaluate with Qini/AUUC
-8. FastAPI `/effect` and `/recommend`, containerized and deployed
+7. Criteo — DuckDB ingests 25M rows; train on 1M-row subsample; Qini/AUUC
+8. Model artifact layer + FastAPI serving, containerized and deployed
 9. Research memo
+
+---
+
+## Results
+
+*Populated as milestones complete.*
+
+### ATE ladder — LaLonde (Dehejia & Wahba subsample + CPS-1)
+
+| Estimator | ATE | 95% CI | Covers $1,794? |
+|---|---|---|---|
+| Naive difference | — | — | — |
+| IPW | — | — | — |
+| AIPW | — | — | — |
+| Double ML | — | — | — |
+| **Experimental benchmark (DW 1999)** | **$1,794** | — | reference |
+
+### CATE — IHDP (replications 1–10)
+
+| Estimator | Mean PEHE | Std PEHE |
+|---|---|---|
+| S-learner | — | — |
+| T-learner | — | — |
+| X-learner | — | — |
+| DR-learner | — | — |
+| Causal forest | — | — |
+
+### Uplift — Criteo (1M-row training subsample)
+
+*Qini curve and AUUC to be added at milestone 7.*
 
 ---
 
 ## Showcase-ready checklist
 
-- [ ] Observational pipeline recovers the LaLonde experimental benchmark
-- [ ] CATE models validated on IHDP via PEHE
+- [ ] LaLonde benchmark: DML 95% CI result on DW/CPS-1 reported; PSID divergence documented
+- [ ] Pre-registered success criteria (see brief §4a) evaluated without post-hoc re-specification
+- [ ] CATE models validated on IHDP replications 1–10 via mean ± std PEHE
 - [ ] Refutation + sensitivity suite implemented and reported
-- [ ] Uplift demo on Criteo with a Qini curve
-- [ ] Deployed API with working `/effect` and `/recommend` endpoints
+- [ ] Criteo: DuckDB ingests 25M rows; Qini curve on 1M-row subsample
+- [ ] Serialized model artifacts with `manifest.json`; deployed API
+- [ ] GitHub Actions CI: pytest passes on every push
 - [ ] 2–4 page research memo
-- [ ] Clean repo: tests, reproducible config, no magic numbers
+- [ ] Clean repo: tests, reproducible config, data provenance verified, no magic numbers
 
 ---
 
@@ -142,6 +203,9 @@ causal-effect-engine/
 - Cunningham, *Causal Inference: The Mixtape*
 - Huntington-Klein, *The Effect*
 - Hernán & Robins, *Causal Inference: What If*
+- LaLonde (1986) — NSW experimental evaluation
+- Dehejia & Wahba (1999) — propensity-score reanalysis; source of the $1,794 benchmark
+- Smith & Todd (2005) — sensitivity of DW results to sample and specification
 - Chernozhukov et al. (2018) — Double/Debiased Machine Learning
 - Wager & Athey (2018) — Causal forests
 - Künzel et al. (2019) — Meta-learners (X-learner)

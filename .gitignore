@@ -20,6 +20,10 @@ data/db/*
 !data/processed/.gitkeep
 !data/db/.gitkeep
 
+# Artifacts — serialized models are not committed (large binaries)
+artifacts/*
+!artifacts/.gitkeep
+
 # Notebooks
 .ipynb_checkpoints/
 

@@ -1,12 +1,20 @@
 datasets:
   lalonde:
-    path: data/raw/lalonde.csv
+    url: https://users.nber.org/~rdehejia/data/nsw_dw.dta  # Dehejia & Wahba subsample
+    sha256: null  # fill in after first download
+    license: public domain
     treatment: treat
     outcome: re78
     covariates: [age, education, black, hispanic, married, nodegree, re74, re75]
+    # Benchmark: Dehejia & Wahba (1999) experimental subsample ATE = $1,794
     experimental_ate: 1794.0
+    comparison_groups:
+      - cps1   # primary — pre-registered for success criterion
+      - psid   # secondary — expected to diverge (Smith & Todd 2005)
   ihdp:
-    path: data/raw/ihdp.csv
+    url: https://www.fredjo.com/files/ihdp_npci_1-100.train.npz  # 100-replication version
+    sha256: null
+    license: public domain (Hill 2011)
     treatment: treatment
     outcome: y_factual
     mu0_col: mu0
@@ -14,11 +22,26 @@ datasets:
     covariates: [x1, x2, x3, x4, x5, x6, x7, x8, x9, x10,
                  x11, x12, x13, x14, x15, x16, x17, x18, x19, x20,
                  x21, x22, x23, x24, x25]
+    # Pre-registered: evaluate on replications 1-10; report mean ± std PEHE
+    eval_replications: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
   criteo:
-    path: data/raw/criteo_uplift.csv
+    url: https://go.criteo.net/criteo-research-uplift-v2.1.csv.gz
+    sha256: null
+    license: CC BY 4.0
     treatment: treatment
     outcome: conversion
     covariates: [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11]
+    # Pre-registered: train on 1M-row stratified subsample (50/50 treatment/control)
+    training_subsample_n: 1_000_000
+    training_subsample_seed: 42
+  hillstrom:
+    url: https://blog.minethatdata.com/2008/03/minethatdata-e-mail-analytics-and-data.html
+    sha256: null
+    license: public domain
+    treatment: segment  # binarize: email vs. no email
+    outcome: spend
+    covariates: [recency, history_segment, history, mens, womens, zip_code, newbie, channel]
+    optional: true
 
 duckdb:
   path: data/db/causal.duckdb
@@ -32,6 +55,10 @@ evaluation:
   n_refutation_simulations: 100
   subset_fraction: 0.8
   n_subsets: 10
+
+artifacts:
+  dir: artifacts/
+  # manifest.json records: estimator name, config hash, training data hash, fit timestamp
 
 api:
   host: 0.0.0.0
